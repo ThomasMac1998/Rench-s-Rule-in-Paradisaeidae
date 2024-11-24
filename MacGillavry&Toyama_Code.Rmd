@@ -1,0 +1,516 @@
+---
+title: "Investigating tail dimorphism in the birds of paradise"
+author: "Thomas MacGillavry"
+date: "2024-08-10"
+output: pdf_document
+---
+
+```{r setup, echo=TRUE, results='hide', message = FALSE}
+# load required packages 
+library(caper)
+library(ape)
+library(phytools)
+library(ggplot2)
+library(ggtree) 
+library(patchwork)
+library(scales)
+library(dplyr)
+library(scico)
+```
+
+```{r, echo=TRUE, results='hide', message = FALSE}
+# Import data and tree 
+
+# This tree is from Ligon et al. (2018) 
+tree <- read.nexus("Ligon.et.al._UltrametricTree")
+# Let's take a look 
+plot(tree, cex = 0.5)
+
+# Read the dataframe 
+data <- read.csv("Frith_Mean_data_1997.csv")
+# Quick inspection 
+str(data) # We've got data for 39 species 
+
+# Calculate sexual dimorphism in total tail length and body mass 
+
+# Calculate the sexual dimorphism index for tail length
+data$tail_dimorphism_index1 <- ifelse(data$tail_M > data$tail_F,
+                                       (data$tail_M / data$tail_F) - 1,
+                                       -1 * ((data$tail_F / data$tail_M) - 1))
+
+# Calculate the sexual dimorphism index for R1 length
+data$tail_dimorphism_index2 <- ifelse(data$tail_full_M > data$tail_full_F,
+                                       (data$tail_full_M / data$tail_full_F) - 1,
+                                       -1 * ((data$tail_full_F / data$tail_full_M) - 1))
+
+# Create comparative dataset for caper 
+compaarative.df <- comparative.data(phy = tree, 
+                                    data = data, 
+                                    names.col = species, 
+                                    vcv = TRUE, 
+                                    na.omit = FALSE, 
+                                    warn.dropped = TRUE) 
+str(compaarative.df) # Tree with 39 tips 
+
+# Save this new dataframe as a .csv 
+# write.csv(data, "Frith_Mean_data_1997.csv", row.names = FALSE)
+```
+
+```{r, echo=TRUE, results='hide', message = FALSE, warning=FALSE}
+# ASR for male total tail length 
+
+# Read the dataset again 
+data <- read.csv("Frith_Mean_data_1997.csv")
+str(data)
+
+# Set Central.Tail to numerical
+data$tail_full_M <- as.numeric(data$tail_full_M)
+
+# set species to factor
+data$species <- as.factor(data$species)
+
+str(data)
+
+# Read the tree 
+tree <- read.nexus("Ligon.et.al._UltrametricTree")
+tree <- drop.tip(tree, "Parotia_helenae")
+
+##########################
+### k-means clustering ###
+##########################
+
+# k-means clustering is an unsupervised machine learning algorithm that 
+# allows you to recognize discrete clusters of continously varying data 
+# and assign them discrete categories. 
+
+# First, let's visualize the male and female relative tail length data: 
+plot(data$tarsus_M, data$tail_full_M)
+plot(data$tarsus_F, data$tail_full_F)
+
+# Since males represent the extremes of tail length among songbirds, and 
+# are the target of mate choice, we only perform a discrete reconstruction on males. 
+
+# Assign the columns of interest to cluster
+tail_vars <- data[, c("tail_full_M", "tarsus_M")]
+
+# Because we are working with random permutations, we set the seed: 
+set.seed(123)
+
+# Calculate k-means for two separate clusters of tail length 
+km.out <- kmeans(log10(tail_vars), centers = 3, nstart = 1000)
+km.out
+
+# Save the clusters into the datafame: 
+data$cluster_id <- factor(km.out$cluster)
+ggplot(data, aes(log10(tarsus_M), log10(tail_full_M), color = cluster_id,  shape = tail_wires)) +
+  geom_point(alpha = 1, cex = 2) + 
+  xlab("ln male tarsus length (cm)") +
+  ylab("ln male total tail length (cm)")
+  
+ # Change names of values 
+
+# Re-code the factor levels
+data$cluster_id <- recode(data$cluster_id, "1" = "Short", "2" = "Long", "3" = "Medium")
+
+# Check the result
+levels(data$cluster_id)
+
+# We saved this data as a new .csv, load that here: 
+
+# Read the dataframe
+X<-read.csv("BoP_tail.data_Kmeans.csv",row.names=1)
+X$cluster_id <- as.factor(X$cluster_id)
+cluster_id <-setNames(X[,1],rownames(X))
+cluster_id
+
+# Plot tree 
+plotTree(tree,fsize=0.6,ftype="i")
+cols<-setNames(c("dodgerblue1", "lightgrey", "white"),levels(cluster_id))
+tiplabels(pie=to.matrix(cluster_id[tree$tip.label], levels(cluster_id)),piecol=cols,cex=0.3)
+add.simmap.legend(colors=cols,prompt=FALSE,x=-3*par()$usr[1],
+                  y=-10*par()$usr[3],fsize=1.5)
+
+# Estimate ancestral states under a ER model
+fitER<-ace(cluster_id,tree,model="ER",type="discrete")
+fitER
+
+fitER$lik.anc
+
+# Estimate ancestral states under a ARD model
+fitARD<-ace(cluster_id,tree,model="ARD",type="discrete")
+fitARD
+warnings() #?? 
+
+fitARD$lik.anc
+
+# Estimate ancestral states under a SYM model
+fitSYM<-ace(cluster_id,tree,model="SYM",type="discrete")
+fitSYM
+
+fitSYM$lik.anc
+
+### Model comparisons 
+
+# fit of models using AIC
+AIC<-setNames(sapply(list(fitER,fitSYM,fitARD),AIC),c("ER","SYM","ARD"))
+AIC
+aic.w(AIC) 
+
+# Plot the ER reconstruction
+plotTree(tree,fsize=0.7, ftype="i",lwd=1.5,lwd=2)
+tiplabels(pie=to.matrix(cluster_id[tree$tip.label], levels(cluster_id)),piecol=cols,cex=0.2)
+nodelabels(node=1:tree$Nnode+Ntip(tree),
+           pie=fitSYM$lik.anc,piecol=cols,cex=0.75)
+add.simmap.legend(colors=cols,prompt=FALSE,x=-0.9*par()$usr[1],
+                  y=-70*par()$usr[3],fsize=1)
+
+######################################################################################### 
+
+### We can also reconstruct the tail length sexual dimorphism index ###
+
+## Specify row names so the data matches the tree
+rownames(data) <- data$species
+
+## Read the tree file
+## The concatenated tree, already ultrametricized in Geneious 
+print(tree, printlen = 2)
+# Drop specified species from the tree
+tree <- drop.tip(tree, "Parotia_helenae") # We do not have data for this species 
+
+## First, let's plot the tree 
+plotTree(tree,fsize=0.9,ftype="i",lwd=1)
+
+## Convert to a vector 
+xx<-setNames(data$tail_dimorphism_index2,rownames(data))
+xx
+
+## Now we want to reconstruct ancestral states, and plot these results on a phylogeny. 
+
+## Change data frame to a vector
+xx<-as.matrix(xx)[,1]
+xx
+
+## Estimate ancestral states 
+fit <- fastAnc(tree, xx, vars=TRUE, CI=TRUE)
+fit
+
+## We can also calculate 95% CIs 
+fit$CI[1,]
+range(xx)
+
+### Plot again in ggtree ### 
+
+# Make a dataframe with trait values at the tips
+td <- data.frame(
+  node = nodeid(tree, names(xx)),
+  trait = xx)
+
+# Make a dataframe with estimated trait values at the nodes
+nd <- data.frame(node = names(fit$ace), trait = fit$ace)
+
+# Combine these with the tree data for plotting with ggtree
+d <- rbind(td, nd)
+d$node <- as.numeric(d$node)
+tree <- full_join(tree, d, by = 'node')
+
+# Plot a Phenogram: 
+
+# Create the plot with the entire tree but only display tip labels for selected species
+ptree1 <- ggtree(tree, continuous = 'colour', yscale = "trait") +
+  theme_classic() + 
+  scale_x_continuous(name = "Evolutionary distance", 
+                     breaks = seq(0, 100, by = 12.5)) + 
+  scale_y_continuous(name = "Tail length SSD index", limits = c(-1, 4.5), 
+                     breaks = seq(-1, 6, by = 1)) + 
+  theme(
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.position = c(0.05, 0.95),
+    legend.justification = c(0, 1)
+  ) +
+  geom_hline(yintercept = 0, colour = "red", linetype = 1) + 
+  geom_point2(aes(subset=(node==60)), shape=21, size=3, fill='dodgerblue1') + 
+  geom_point2(aes(subset=(node==69)), shape=21, size=3, fill='darkgoldenrod2')
+
+######################################################################################### 
+
+### We can also reconstruct tail ornament length (central rectrices) ###
+
+# Read the tree again 
+tree <- read.nexus("Ligon.et.al._UltrametricTree")
+tree <- drop.tip(tree, "Parotia_helenae")
+
+## Convert to a vector 
+xx<-setNames(data$tail_full_M,rownames(data))
+xx
+
+## Now we want to reconstruct ancestral states, and plot these results on a phylogeny. 
+
+## Change data frame to a vector
+xx<-as.matrix(xx)[,1]
+xx
+
+## Estimate ancestral states 
+fit <- fastAnc(tree, xx, vars=TRUE, CI=TRUE)
+fit
+
+## We can also calculate 95% CIs 
+fit$CI[1,]
+range(xx)
+
+### Plot again in ggtree ### 
+
+# Make a dataframe with trait values at the tips
+td <- data.frame(
+  node = nodeid(tree, names(xx)),
+  trait = xx)
+
+# Make a dataframe with estimated trait values at the nodes
+nd <- data.frame(node = names(fit$ace), trait = fit$ace)
+
+# Combine these with the tree data for plotting with ggtree
+d <- rbind(td, nd)
+d$node <- as.numeric(d$node)
+tree <- full_join(tree, d, by = 'node')
+
+# Plot a Phenogram: 
+
+# Create the plot with the entire tree but only display tip labels for selected species
+# Create the plot with the entire tree but only display tip labels for selected species
+# Create the plot with the entire tree but only display tip labels for selected species
+ptree2 <- ggtree(tree, continuous = 'colour', yscale = "trait") +
+  theme_classic() + 
+  scale_x_continuous(name = "Evolutionary distance", 
+                     breaks = seq(0, 100, by = 12.5)) + 
+  scale_y_continuous(name = "Tail length (mm)", limits = c(0, 900), 
+                     breaks = seq(0, 900, by = 100)) + 
+  theme(
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.position = c(0.05, 0.95),
+    legend.justification = c(0, 1)
+  ) +
+  geom_point2(aes(subset=(node==60)), shape=21, size=3, fill='dodgerblue1') + 
+  geom_point2(aes(subset=(node==69)), shape=21, size=3, fill='darkgoldenrod2')
+```
+
+
+
+```{r, echo=TRUE, results='hide', message = FALSE}
+# Load diagnostic functions 
+source("diagnostic_fcns.r")
+
+### Fit a pgls model: tail length ###
+
+# null model 
+m1.null<- pgls(log10(tail_M) ~ log10(tail_F), 
+          data = compaarative.df, lambda = "ML")
+# Diagnostics 
+diagnostics.plot(m1.null)
+
+# full model 
+m1.full<- pgls(log10(tail_M) ~ log10(tail_F) + tail_wires, 
+          data = compaarative.df, lambda = "ML")
+# Diagnostics 
+diagnostics.plot(m1.full)
+
+# Compare based on AIC 
+AIC(m1.full, m1.null)
+(-86.73718)	-	(-88.72257) # delta AIC = 1.98539
+# The null model is a better fit 
+# Inspect output of the null model 
+summary(m1.null)
+nobs(m1.null)
+
+### Fit a pgls model: central tail (R1) length ###
+
+# null model 
+m2.null<- pgls(log10(tail_full_M) ~ log10(tail_full_F), 
+          data = compaarative.df, lambda = "ML")
+# Diagnostics 
+diagnostics.plot(m2.null) 
+
+# full model 
+m2.full<- pgls(log10(tail_full_M) ~ log10(tail_full_F) + tail_wires, 
+          data = compaarative.df, lambda = "ML")
+# Diagnostics 
+diagnostics.plot(m2.full)
+
+# Compare based on AIC 
+AIC(m2.full, m2.null)
+(-85.16342) -	(-28.05472) # delta AIC = 57.1087
+# The full model is a much better fit 
+
+# Inspect output of the full model 
+summary(m2.full)
+nobs(m2.full)
+```
+
+```{r, echo=TRUE, results='hide', message = FALSE}
+### Plotting ###
+
+# For the tail length minus the central tail feathers 
+p1 <- ggplot(data, aes(x = log10(tail_F), y = log10(tail_M), fill = tail_wires)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey50", linetype = "dotted", size = 1) + 
+  geom_point(shape = 21, size = 2) + 
+  labs(x = "Female tail length (mm)", 
+       y = "Male tail length (mm)",
+       fill = "Tail Wires") +
+  theme_classic(base_size = 10.5) +  
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank()) +
+  geom_abline(slope = 1.49835, intercept = -1.03402, color = "black", linetype = 1, size = 0.6) +
+  scale_fill_manual(values = c("dodgerblue1", "darkgoldenrod2"), 
+                    labels = c("No", "Yes")) + 
+  ggtitle("Tail length minus R1") +
+  scale_x_continuous(breaks = log10(seq(100, 1200, by = 50)),  
+                     labels = seq(100, 1200, by = 50)) +
+  scale_y_continuous(breaks = log10(seq(100, 1200, by = 100)), 
+                     labels = seq(100, 1200, by = 100))
+
+# For the full tail length 
+p2 <- ggplot(data, aes(x = log10(tail_full_F), y = log10(tail_full_M), fill = tail_wires)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey50", linetype = "dotted", size = 1) + 
+  geom_point(shape = 21, size = 2) + 
+  labs(x = "Female R1 length (mm)", 
+       y = "Male R1 length (mm)",
+       fill = "Tail Wires") +  
+  theme_classic(base_size = 10.5) +  
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank()) +
+  geom_abline(slope = 1.650956, intercept = -1.327168, color = "black", linetype = 1, size = 0.6) +
+  geom_abline(slope = 1.650956, intercept = -1.327168 + 0.677858, color = "black", linetype = 1, size = 0.6) +
+  scale_fill_manual(values = c("dodgerblue1", "darkgoldenrod2"), 
+                    labels = c("No", "Yes")) + 
+  ggtitle("R1 length") +
+  scale_x_continuous(breaks = log10(seq(100, 1200, by = 50)),  
+                     labels = seq(100, 1200, by = 50)) +
+  scale_y_continuous(breaks = log10(seq(100, 1200, by = 100)), 
+                     labels = seq(100, 1200, by = 100))
+
+# Illustrating sexual dimorphism index in R1 length 
+ggplot(data, aes(x = log10(tail_full_M), y = tail_dimorphism_index2, shape = cluster_id, fill = tail_wires)) +
+  geom_hline(yintercept = 0, colour = "red", linetype = 1) + 
+  geom_point(size = 2) + 
+  labs(y = "Tail length SSD index", 
+       x = "Male tail length (mm)") +  # Removed fill and shape labels from labs
+  theme_bw(base_size = 10.5) +  
+  theme(
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis text
+    legend.position = "none"  # Remove the legend
+  ) + 
+  scale_fill_manual(values = c("dodgerblue1", "darkgoldenrod2"), 
+                    labels = c("No", "Yes")) +
+  scale_shape_manual(values = c(23, 22, 21),  # Specify the shapes for tail_wires levels
+                     labels = c("Long", "Medium", "Short")) +  # Customize labels for shapes
+  scale_x_continuous(breaks = log10(seq(100, 1200, by = 100)),  
+                     labels = seq(100, 1200, by = 100))
+
+# Stitch plots together 
+combined <- (p1 | p2) & theme(legend.position = "bottom")
+combined + plot_layout(guides = "collect") + plot_annotation(tag_levels = 'A')
+```
+
+```{r, echo=TRUE, results='hide', message = FALSE}
+# Tail length in a broader context 
+
+# Start with fresh directory 
+rm(list = ls())
+
+data <- read.csv("AllBirds_tail.data.csv")
+str(data)
+
+# Filter only males 
+data.M <- filter(data, Sex == "M")
+
+# Filter only females 
+data.F <- filter(data, Sex == "F")
+
+# Now for only passerines 
+
+# Males 
+Passerines.M <- filter(data.M, Order2 == "Passeriformes")
+
+# Females 
+Passerines.F <- filter(data.F, Order2 == "Passeriformes")
+
+##############################################################################################################################################################################
+
+# Filter species with Family2 == 'Paradisaeidae'
+paradisaeidae_species <- Passerines.M[Passerines.M$Family2 == 'Paradisaeidae', ]
+menuridae_species <- Passerines.M[Passerines.M$Family2 == 'Menuridae', ]
+paradisaeidae_species.2 <- Passerines.F[Passerines.F$Family2 == 'Paradisaeidae', ]
+menuridae_species.2 <- Passerines.F[Passerines.F$Family2 == 'Menuridae', ]
+
+# For males
+M <- ggplot(Passerines.M, aes(mean_Tail.Length)) +
+  geom_histogram(binwidth = 10, fill = "black") +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  labs(title = "Males (n = 5950)", 
+       x = "Mean tail length (mm)", 
+       y = "# species") + 
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14), 
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)) +
+  geom_segment(data = paradisaeidae_species, aes(x = mean_Tail.Length, xend = mean_Tail.Length, y = 0, yend = 100), 
+               color = "darkgoldenrod1", size = 0.75) +  # Short bar for Paradisaeidae
+  geom_segment(data = menuridae_species, aes(x = mean_Tail.Length, xend = mean_Tail.Length, y = 0, yend = 100), 
+               color = "red", size = 0.75) +  # Short bar for Menuridae
+  xlim(c(0, 900))
+
+# For females
+F <- ggplot(Passerines.F, aes(mean_Tail.Length)) +
+  geom_histogram(binwidth = 10, fill = "black") +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  labs(title = "Females (n = 5618)", 
+       x = "Mean tail length (mm)", 
+       y = NULL) + 
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14), 
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)) +
+  geom_segment(data = paradisaeidae_species.2, aes(x = mean_Tail.Length, xend = mean_Tail.Length, y = 0, yend = 100), 
+               color = "darkgoldenrod1", size = 0.75) +  # Short bar for Paradisaeidae
+  geom_segment(data = menuridae_species.2, aes(x = mean_Tail.Length, xend = mean_Tail.Length, y = 0, yend = 100), 
+               color = "red", size = 0.75) +  # Short bar for Menuridae
+  xlim(c(0, 900))
+
+# Plots together
+M / F
+
+# Checking sample sizes 
+length(Passerines.M$mean_Tail.Length)
+length(Passerines.F$mean_Tail.Length)
+
+### 
+# What are the top 10 longest tails in passerines? 
+
+# Arrange the dataset in descending order based on "mean_Tail.Length"
+Passerines.M_sorted <- Passerines.M %>% arrange(desc(mean_Tail.Length))
+Passerines.F_sorted <- Passerines.F %>% arrange(desc(mean_Tail.Length))
+
+# Select the top 10 rows with the highest tail lengths
+head(Passerines.M_sorted, 20)
+head(Passerines.F_sorted, 20)
+```
+
+
+
+
+
+
